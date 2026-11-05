@@ -1,0 +1,143 @@
+# ==============================================================================
+# Portainer Stack Compose - AI Manus
+# ==============================================================================
+# Use este arquivo diretamente no Portainer (Stacks -> Add stack -> Web editor
+# ou Repository).
+#
+# Imagens geradas pelo GitHub Actions no GitHub Container Registry (GHCR):
+#   - Frontend: ghcr.io/fluowai/manusai/manus-frontend:latest
+#   - Backend:  ghcr.io/fluowai/manusai/manus-backend:latest
+#   - Sandbox:  ghcr.io/fluowai/manusai/manus-sandbox:latest
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. FRONTEND (Vue 3 + Tailwind + Nginx)
+  # ----------------------------------------------------------------------------
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/fluowai/manusai/manus-frontend:latest}
+    container_name: manus-frontend
+    restart: unless-stopped
+    ports:
+      - "${PORT_FRONTEND:-5173}:80"
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:8000
+    networks:
+      - manus-network
+
+  # ----------------------------------------------------------------------------
+  # 2. BACKEND (FastAPI + LangChain + Beanie)
+  # ----------------------------------------------------------------------------
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/fluowai/manusai/manus-backend:latest}
+    container_name: manus-backend
+    restart: unless-stopped
+    ports:
+      - "${PORT_BACKEND:-8000}:8000"
+    depends_on:
+      - mongodb
+      - redis
+    volumes:
+      # Necessário para o modo dinâmico (onde o backend orquestra sandboxes via Docker)
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # --- Configurações de LLM ---
+      - API_KEY=${API_KEY:-sua-chave-api-aqui}
+      - API_BASE=${API_BASE:-https://api.openai.com/v1}
+      - MODEL_PROVIDER=${MODEL_PROVIDER:-openai}
+      - MODEL_NAME=${MODEL_NAME:-gpt-4o}
+      - TEMPERATURE=${TEMPERATURE:-0.7}
+      - MAX_TOKENS=${MAX_TOKENS:-4000}
+
+      # --- Autenticação ---
+      # Opções: 'none' (sem login, recomendado para uso pessoal/local) ou 'password'
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-none}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-manus-jwt-secret-mude-em-producao-123456789}
+      - PASSWORD_SALT=${PASSWORD_SALT:-salt123}
+
+      # --- Busca na Web ---
+      # bing_web e baidu_web funcionam sem chave de API
+      - SEARCH_PROVIDER=${SEARCH_PROVIDER:-bing_web}
+      - BING_SEARCH_API_KEY=${BING_SEARCH_API_KEY:-}
+      - GOOGLE_SEARCH_API_KEY=${GOOGLE_SEARCH_API_KEY:-}
+      - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+
+      # --- Banco de Dados e Cache ---
+      - MONGODB_URI=mongodb://mongodb:27017
+      - MONGODB_DATABASE=manus
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      # --- Configuração do Sandbox ---
+      # No modo dinâmico, o backend cria containers usando esta imagem:
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-ghcr.io/fluowai/manusai/manus-sandbox:latest}
+      - SANDBOX_NAME_PREFIX=manus-sandbox
+      - SANDBOX_NETWORK=manus-network
+      - SANDBOX_TTL_MINUTES=30
+
+      # Se NÃO quiser expor o /var/run/docker.sock, comente a montagem do volume
+      # acima e defina a variável abaixo apontando para o container sandbox estático:
+      # - SANDBOX_ADDRESS=sandbox
+
+      # --- Logs ---
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - manus-network
+
+  # ----------------------------------------------------------------------------
+  # 3. SANDBOX (Pré-carregamento da imagem / Cache para o daemon local)
+  # ----------------------------------------------------------------------------
+  # No modo dinâmico, este serviço simplesmente garante que a imagem do sandbox
+  # seja baixada pelo Portainer no host e encerra com código 0.
+  sandbox:
+    image: ${SANDBOX_IMAGE:-ghcr.io/fluowai/manusai/manus-sandbox:latest}
+    container_name: manus-sandbox-preload
+    command: /bin/sh -c "exit 0"
+    restart: "no"
+    networks:
+      - manus-network
+
+  # ----------------------------------------------------------------------------
+  # 4. BANCO DE DADOS (MongoDB 7.0)
+  # ----------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: manus-mongodb
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - manus-network
+
+  # ----------------------------------------------------------------------------
+  # 5. CACHE / FILAS (Redis 7.0)
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7.0
+    container_name: manus-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - manus-network
+
+# ------------------------------------------------------------------------------
+# Volumes Persistentes
+# ------------------------------------------------------------------------------
+volumes:
+  mongodb_data:
+    name: manus-mongodb-data
+  redis_data:
+    name: manus-redis-data
+
+# ------------------------------------------------------------------------------
+# Rede Interna
+# ------------------------------------------------------------------------------
+networks:
+  manus-network:
+    name: manus-network
+    driver: bridge
+
